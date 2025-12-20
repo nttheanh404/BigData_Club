@@ -6,3 +6,8 @@ logs/
 data/
 .idea/
 .DS_Store
+
+myenv/
+venv/
+.env/
+.venv/
