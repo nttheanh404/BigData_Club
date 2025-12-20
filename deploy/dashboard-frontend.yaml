@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crypto-frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: crypto-frontend
+  template:
+    metadata:
+      labels:
+        app: crypto-frontend
+    spec:
+      containers:
+        - name: frontend
+          imagePullPolicy: Always
+          image: an2428/crypto-frontend:lastest # Replace with your image
+          ports:
+            - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: crypto-frontend-svc
+spec:
+  type: NodePort # Expose to outside world
+  selector:
+    app: crypto-frontend
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 30080 # Access via http://<node-ip>:30080

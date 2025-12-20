@@ -1,0 +1,39 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  # Map ports so you can access UIs from localhost
+  extraPortMappings:
+  - containerPort: 30092
+    hostPort: 9092  # Kafka External
+  - containerPort: 30920
+    hostPort: 9200  # Elasticsearch
+  - containerPort: 30070
+    hostPort: 9870  # HDFS NameNode UI
+  # Map local folders for persistence (Simulates "Local Disk")
+  extraMounts:
+  - hostPath: ./data/kafka
+    containerPath: /var/lib/kafka/data
+  - hostPath: ./data/es
+    containerPath: /usr/share/elasticsearch/data
+  - hostPath: ./data/hdfs
+    containerPath: /hadoop/dfs/data
+- role: worker
+    # Worker node 1
+    extraMounts:
+      - hostPath: ./data/kafka
+        containerPath: /var/lib/kafka/data
+      - hostPath: ./data/es
+        containerPath: /usr/share/elasticsearch/data
+      - hostPath: ./data/hdfs
+        containerPath: /hadoop/dfs/data
+
+  - role: worker
+    # Worker node 2
+    extraMounts:
+      - hostPath: ./data/kafka
+        containerPath: /var/lib/kafka/data
+      - hostPath: ./data/es
+        containerPath: /usr/share/elasticsearch/data
+      - hostPath: ./data/hdfs
+        containerPath: /hadoop/dfs/data

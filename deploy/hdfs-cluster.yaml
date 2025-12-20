@@ -1,0 +1,171 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hadoop-config
+data:
+  core-site.xml: |
+    <?xml version="1.0"?>
+    <configuration>
+      <property>
+        <name>fs.defaultFS</name>
+        <value>hdfs://hdfs-namenode-0.hdfs-namenode.default.svc.cluster.local:9000</value>
+      </property>
+    </configuration>
+  hdfs-site.xml: |
+    <?xml version="1.0"?>
+    <configuration>
+      <property>
+        <name>dfs.replication</name>
+        <value>1</value>
+      </property>
+      <property>
+        <name>dfs.namenode.name.dir</name>
+        <value>/hadoop/dfs/name</value>
+      </property>
+      <property>
+        <name>dfs.datanode.data.dir</name>
+        <value>/hadoop/dfs/data</value>
+      </property>
+      <property>
+        <name>dfs.permissions.enabled</name>
+        <value>false</value>
+      </property>
+    </configuration>
+
+---
+# ------------------- NameNode Service -------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: hdfs-namenode
+spec:
+  ports:
+    - port: 9000
+      name: fs
+    - port: 9870
+      name: http
+  clusterIP: None
+  selector:
+    app: hdfs-namenode
+
+---
+# ------------------- NameNode StatefulSet -------------------
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: hdfs-namenode
+spec:
+  serviceName: hdfs-namenode
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hdfs-namenode
+  template:
+    metadata:
+      labels:
+        app: hdfs-namenode
+    spec:
+      # Fix permissions before starting
+      initContainers:
+      - name: fix-permissions
+        image: busybox
+        command: ["sh", "-c", "mkdir -p /hadoop/dfs/name && chown -R 1000:1000 /hadoop/dfs"]
+        volumeMounts:
+        - name: namenode-storage
+          mountPath: /hadoop/dfs
+      containers:
+      - name: namenode
+        image: apache/hadoop:3
+        command: ["/bin/bash", "-c"]
+        args: 
+          - |
+            # Format NameNode if not formatted
+            if [ ! -d "/hadoop/dfs/name/current" ]; then
+              echo "Formatting NameNode..."
+              /opt/hadoop/bin/hdfs namenode -format -nonInteractive
+            fi
+            # Start NameNode
+            echo "Starting NameNode..."
+            /opt/hadoop/bin/hdfs namenode
+        env:
+          - name: HDFS_CONF_DIR
+            value: /opt/hadoop/etc/hadoop
+        volumeMounts:
+          - name: config
+            mountPath: /opt/hadoop/etc/hadoop/core-site.xml
+            subPath: core-site.xml
+          - name: config
+            mountPath: /opt/hadoop/etc/hadoop/hdfs-site.xml
+            subPath: hdfs-site.xml
+          - name: namenode-storage
+            mountPath: /hadoop/dfs
+        ports:
+          - containerPort: 9000
+          - containerPort: 9870
+      volumes:
+        - name: config
+          configMap:
+            name: hadoop-config
+        - name: namenode-storage
+          emptyDir: {}
+
+---
+# ------------------- DataNode Service -------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: hdfs-datanode
+spec:
+  ports:
+    - port: 9864
+      name: http
+  selector:
+    app: hdfs-datanode
+
+---
+# ------------------- DataNode StatefulSet -------------------
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: hdfs-datanode
+spec:
+  serviceName: hdfs-datanode
+  replicas: 2
+  selector:
+    matchLabels:
+      app: hdfs-datanode
+  template:
+    metadata:
+      labels:
+        app: hdfs-datanode
+    spec:
+      # Fix permissions before starting
+      initContainers:
+      - name: fix-permissions
+        image: busybox
+        command: ["sh", "-c", "mkdir -p /hadoop/dfs/data && chown -R 1000:1000 /hadoop/dfs"]
+        volumeMounts:
+        - name: datanode-storage
+          mountPath: /hadoop/dfs
+      containers:
+      - name: datanode
+        image: apache/hadoop:3
+        command: ["/opt/hadoop/bin/hdfs", "datanode"]
+        env:
+          - name: HDFS_CONF_DIR
+            value: /opt/hadoop/etc/hadoop
+        volumeMounts:
+          - name: config
+            mountPath: /opt/hadoop/etc/hadoop/core-site.xml
+            subPath: core-site.xml
+          - name: config
+            mountPath: /opt/hadoop/etc/hadoop/hdfs-site.xml
+            subPath: hdfs-site.xml
+          - name: datanode-storage
+            mountPath: /hadoop/dfs
+      volumes:
+        - name: config
+          configMap:
+            name: hadoop-config
+        - name: datanode-storage
+          emptyDir: {}

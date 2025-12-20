@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ohlcv-producer-config
+  namespace: kafka
+data:
+  KAFKA_BROKER: my-kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092
+  KAFKA_OHLCV_1M_TOPIC: crypto_ohlcv_1m
+  CRYPTO_SYMBOLS: BTC/USDT,ETH/USDT
+  CRYPTO_EXCHANGE: binance
+  MINUTE_CHART_FETCH_INTERVAL: "60"

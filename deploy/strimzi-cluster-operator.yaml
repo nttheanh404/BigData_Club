@@ -1,0 +1,79 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kafka
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: strimzi-cluster-operator
+  labels:
+    app: strimzi
+  namespace: kafka
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: strimzi-cluster-operator-role
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps", "endpoints", "persistentvolumeclaims", "events", "secrets"]
+    verbs: ["*"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["*"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["*"]
+  - apiGroups: ["kafka.strimzi.io"]
+    resources: ["*"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: strimzi-cluster-operator-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: strimzi-cluster-operator-role
+subjects:
+  - kind: ServiceAccount
+    name: strimzi-cluster-operator
+    namespace: kafka
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: strimzi-cluster-operator
+  labels:
+    app: strimzi
+  namespace: kafka
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: strimzi-cluster-operator
+  template:
+    metadata:
+      labels:
+        name: strimzi-cluster-operator
+    spec:
+      serviceAccountName: strimzi-cluster-operator
+      containers:
+        - name: strimzi-cluster-operator
+          image: quay.io/strimzi/operator:0.41.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: STRIMZI_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: STRIMZI_KAFKA_IMAGES
+              value: |
+                3.7.0=quay.io/strimzi/kafka:0.41.0-kafka-3.7.0
+            - name: STRIMZI_FULL_RECONCILIATION_INTERVAL_MS
+              value: "120000"
+            - name: STRIMZI_OPERATION_TIMEOUT_MS
+              value: "300000"
+

@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ohlcv-producer
+  namespace: kafka
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ohlcv-producer
+  template:
+    metadata:
+      labels:
+        app: ohlcv-producer
+    spec:
+      containers:
+        - name: producer
+          image: an2428/ohlcv-1m-producer:latest
+          envFrom:
+            - configMapRef:
+                name: ohlcv-producer-config

@@ -1,0 +1,34 @@
+apiVersion: kafka.strimzi.io/v1 # Correct API version
+kind: Kafka
+metadata:
+  name: my-kafka-cluster
+  namespace: kafka
+ # KRaft is enabled via annotations on the v1 API
+  annotations:
+    strimzi.io/node-pools: "true"
+    strimzi.io/kraft: "true"
+spec:
+  # The Kafka version is now a direct field under spec
+  kafka:
+    version: 4.1.1 
+    # Listeners are nested under the kafka object
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+      - name: external
+        port: 9094
+        type: nodeport
+        tls: false
+    # Config is nested under the kafka object
+    config:
+      log.message.format.version: "3.6"
+      inter.broker.protocol.version: "3.6"
+      offsets.topic.replication.factor: 1
+      transaction.state.log.replication.factor: 1
+      transaction.state.log.min.isr: 1
+      default.replication.factor: 1
+      min.insync.replicas: 1
+  # The 'zookeeper' object must be present and set to null/empty in KRaft mode
+  

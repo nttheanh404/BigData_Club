@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crypto-backend
+  labels:
+    app: crypto-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: crypto-backend
+  template:
+    metadata:
+      labels:
+        app: crypto-backend
+    spec:
+      containers:
+      - name: backend
+        image: an2428/crypto-backend:lastest  # Replace with your actual image name
+        ports:
+        - containerPort: 8000
+        env:
+        # 1. ES Host URL (Changed to HTTPS)
+        - name: ES_HOST
+          value: "https://quickstart-es-http.default.svc:9200"        
+        # 2. Path to the mounted CA certificate
+        - name: ES_CA_CERT_PATH
+          value: "/mnt/certs/ca.crt"
+
+        # 3. Password from the Secret
+        - name: ELASTIC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: quickstart-es-elastic-user
+              key: elastic
+
+        volumeMounts:
+        # 4. Mount the certificate secret to /mnt/certs
+        - name: es-certs
+          mountPath: "/mnt/certs"
+          readOnly: true
+      
+      volumes:
+      # 5. Define the volume from the secret
+      - name: es-certs
+        secret:
+          secretName: quickstart-es-http-certs-public

@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backtest-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backtest-api
+  template:
+    metadata:
+      labels:
+        app: backtest-api
+    spec:
+      serviceAccountName: spark-sa
+
+      containers:
+      - name: api
+        image: an2428/custom-crypto-backtester:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+
+        env:
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+
+        - name: HDFS_RAW_PATH
+          value: "hdfs://hdfs-service:9000/data/crypto/raw_1m"
+         
+        # ===== Elasticsearch config (GIỐNG MẪU) =====
+        - name: ES_HOST
+          value: "quickstart-es-internal-http.default.svc.cluster.local"
+
+        - name: ES_USER
+          value: "elastic"
+
+        - name: ES_PASS
+          valueFrom:
+            secretKeyRef:
+              name: quickstart-es-elastic-user
+              key: elastic
+        - name: CONTAINER_IMAGE
+          value: "an2428/custom-crypto-backtester:latest"
+        - name: ES_SSL_TRUSTSTORE_PATH
+          value: "file:///mnt/truststore/elastic-truststore.jks"
+
+        - name: ES_SSL_TRUSTSTORE_PASS
+          value: "changeit"
+        # ===========================================
+
+        volumeMounts:
+        - name: es-truststore
+          mountPath: /mnt/truststore
+          readOnly: true
+
+      volumes:
+      - name: es-truststore
+        secret:
+          secretName: es-truststore
