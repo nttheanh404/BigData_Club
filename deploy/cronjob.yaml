@@ -1,0 +1,35 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: batch-candle-ingest
+  namespace: default
+spec:
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: batch-ingest
+            image: an2428/batch-candle-ingest:latest
+            imagePullPolicy: Always
+            env:
+              # CORRECTED URL:
+              - name: HDFS_BASE_PATH
+                value: "hdfs://hdfs-service.default.svc.cluster.local:9000/data/crypto"
+              
+              - name: HADOOP_USER_NAME
+                value: "root"
+              - name: SPARK_LOCAL_IP
+                valueFrom:
+                  fieldRef:
+                    fieldPath: status.podIP
+            resources:
+              requests:
+                memory: "512Mi"
+                cpu: "500m"
+              limits:
+                memory: "1Gi"
+                cpu: "1000m"
+          restartPolicy: OnFailure

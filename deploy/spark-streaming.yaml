@@ -17,6 +17,13 @@ spec:
           image: an2428/spark-stream-job:latest
           imagePullPolicy: Always
           env:
+            # CORRECTED URLS:
+            - name: HDFS_BASE_PATH
+              value: "hdfs://hdfs-service.default.svc.cluster.local:9000/data/crypto"
+            - name: CHECKPOINT_DIR
+              value: "hdfs://hdfs-service.default.svc.cluster.local:9000/data/checkpoints/crypto"
+              
+            # Kafka & ES (These looked correct based on your logs/svc)
             - name: KAFKA_BOOTSTRAP
               value: "my-kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092"
             - name: ES_HOST
@@ -32,15 +39,13 @@ spec:
               value: "file:///mnt/truststore/elastic-truststore.jks"
             - name: ES_SSL_TRUSTSTORE_PASS
               value: "changeit"
-            - name: CHECKPOINT_DIR
-              value: "hdfs://hdfs-service:9000/spark/checkpoints/crypto"
-            - name: HDFS_RAW_PATH
-              value: "hdfs://hdfs-service:9000/data/crypto/raw_1m"
+            - name: HADOOP_USER_NAME
+              value: "root"
+
           volumeMounts:
             - name: es-truststore
               mountPath: /mnt/truststore
               readOnly: true
-
       volumes:
         - name: es-truststore
           secret:

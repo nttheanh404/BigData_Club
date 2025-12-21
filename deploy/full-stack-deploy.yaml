@@ -1,0 +1,536 @@
+# ==============================================================================
+# PHẦN 1: NAMESPACE & OPERATORS
+# ==============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kafka
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: strimzi-cluster-operator
+  labels:
+    app: strimzi
+  namespace: kafka
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: strimzi-cluster-operator-role
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps", "endpoints", "persistentvolumeclaims", "events", "secrets"]
+    verbs: ["*"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["*"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["*"]
+  - apiGroups: ["kafka.strimzi.io"]
+    resources: ["*"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: strimzi-cluster-operator-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: strimzi-cluster-operator-role
+subjects:
+  - kind: ServiceAccount
+    name: strimzi-cluster-operator
+    namespace: kafka
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: strimzi-cluster-operator
+  labels:
+    app: strimzi
+  namespace: kafka
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: strimzi-cluster-operator
+  template:
+    metadata:
+      labels:
+        name: strimzi-cluster-operator
+    spec:
+      serviceAccountName: strimzi-cluster-operator
+      containers:
+        - name: strimzi-cluster-operator
+          image: quay.io/strimzi/operator:0.41.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: STRIMZI_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: STRIMZI_KAFKA_IMAGES
+              value: |
+                3.7.0=quay.io/strimzi/kafka:0.41.0-kafka-3.7.0
+            - name: STRIMZI_FULL_RECONCILIATION_INTERVAL_MS
+              value: "120000"
+            - name: STRIMZI_OPERATION_TIMEOUT_MS
+              value: "300000"
+
+# ==============================================================================
+# PHẦN 2: STORAGE INFRASTRUCTURE (HDFS & ELASTICSEARCH)
+# ==============================================================================
+---
+# --- HDFS CONFIG ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hadoop-config
+data:
+  core-site.xml: |
+    <?xml version="1.0"?>
+    <configuration>
+      <property>
+        <name>fs.defaultFS</name>
+        <value>hdfs://hdfs-namenode-0.hdfs-namenode.default.svc.cluster.local:9000</value>
+      </property>
+    </configuration>
+  hdfs-site.xml: |
+    <?xml version="1.0"?>
+    <configuration>
+      <property>
+        <name>dfs.replication</name>
+        <value>1</value>
+      </property>
+      <property>
+        <name>dfs.namenode.name.dir</name>
+        <value>/hadoop/dfs/name</value>
+      </property>
+      <property>
+        <name>dfs.datanode.data.dir</name>
+        <value>/hadoop/dfs/data</value>
+      </property>
+      <property>
+        <name>dfs.permissions.enabled</name>
+        <value>false</value>
+      </property>
+    </configuration>
+---
+# --- HDFS SERVICES ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hdfs-namenode
+spec:
+  ports:
+    - port: 9000
+      name: fs
+    - port: 9870
+      name: http
+  clusterIP: None
+  selector:
+    app: hdfs-namenode
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hdfs-datanode
+spec:
+  ports:
+    - port: 9864
+      name: http
+  selector:
+    app: hdfs-datanode
+---
+# --- HDFS STATEFULSETS ---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: hdfs-namenode
+spec:
+  serviceName: hdfs-namenode
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hdfs-namenode
+  template:
+    metadata:
+      labels:
+        app: hdfs-namenode
+    spec:
+      initContainers:
+      - name: fix-permissions
+        image: busybox
+        command: ["sh", "-c", "mkdir -p /hadoop/dfs/name && chown -R 1000:1000 /hadoop/dfs"]
+        volumeMounts:
+        - name: namenode-storage
+          mountPath: /hadoop/dfs
+      containers:
+      - name: namenode
+        image: apache/hadoop:3
+        command: ["/bin/bash", "-c"]
+        args: 
+          - |
+            if [ ! -d "/hadoop/dfs/name/current" ]; then
+              echo "Formatting NameNode..."
+              /opt/hadoop/bin/hdfs namenode -format -nonInteractive
+            fi
+            echo "Starting NameNode..."
+            /opt/hadoop/bin/hdfs namenode
+        env:
+          - name: HDFS_CONF_DIR
+            value: /opt/hadoop/etc/hadoop
+        volumeMounts:
+          - name: config
+            mountPath: /opt/hadoop/etc/hadoop/core-site.xml
+            subPath: core-site.xml
+          - name: config
+            mountPath: /opt/hadoop/etc/hadoop/hdfs-site.xml
+            subPath: hdfs-site.xml
+          - name: namenode-storage
+            mountPath: /hadoop/dfs
+        ports:
+          - containerPort: 9000
+          - containerPort: 9870
+      volumes:
+        - name: config
+          configMap:
+            name: hadoop-config
+        - name: namenode-storage
+          emptyDir: {}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: hdfs-datanode
+spec:
+  serviceName: hdfs-datanode
+  replicas: 2
+  selector:
+    matchLabels:
+      app: hdfs-datanode
+  template:
+    metadata:
+      labels:
+        app: hdfs-datanode
+    spec:
+      initContainers:
+      - name: fix-permissions
+        image: busybox
+        command: ["sh", "-c", "mkdir -p /hadoop/dfs/data && chown -R 1000:1000 /hadoop/dfs"]
+        volumeMounts:
+        - name: datanode-storage
+          mountPath: /hadoop/dfs
+      containers:
+      - name: datanode
+        image: apache/hadoop:3
+        command: ["/opt/hadoop/bin/hdfs", "datanode"]
+        env:
+          - name: HDFS_CONF_DIR
+            value: /opt/hadoop/etc/hadoop
+        volumeMounts:
+          - name: config
+            mountPath: /opt/hadoop/etc/hadoop/core-site.xml
+            subPath: core-site.xml
+          - name: config
+            mountPath: /opt/hadoop/etc/hadoop/hdfs-site.xml
+            subPath: hdfs-site.xml
+          - name: datanode-storage
+            mountPath: /hadoop/dfs
+      volumes:
+        - name: config
+          configMap:
+            name: hadoop-config
+        - name: datanode-storage
+          emptyDir: {}
+---
+# --- ELASTICSEARCH ---
+apiVersion: elasticsearch.k8s.elastic.co/v1
+kind: Elasticsearch
+metadata:
+  name: quickstart
+spec:
+  version: 8.13.4
+  nodeSets:
+  - name: default
+    count: 1
+    config:
+      node.store.allow_mmap: false
+    volumeClaimTemplates:
+    - metadata:
+        name: elasticsearch-data
+      spec:
+        accessModes:
+        - ReadWriteOnce
+        resources:
+          requests:
+            storage: 5Gi
+        storageClassName: standard
+
+# ==============================================================================
+# PHẦN 3: KAFKA CLUSTER (Namespace: kafka)
+# ==============================================================================
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaNodePool
+metadata:
+  name: pool-1
+  namespace: kafka
+  labels:
+    strimzi.io/cluster: my-kafka-cluster
+spec:
+  replicas: 1
+  roles:
+    - controller
+    - broker
+  storage:
+    type: ephemeral
+---
+apiVersion: kafka.strimzi.io/v1
+kind: Kafka
+metadata:
+  name: my-kafka-cluster
+  namespace: kafka
+  annotations:
+    strimzi.io/node-pools: "true"
+    strimzi.io/kraft: "true"
+spec:
+  kafka:
+    version: 4.1.1 
+    listeners:
+      - name: plain
+        port: 9092
+        type: internal
+        tls: false
+      - name: external
+        port: 9094
+        type: nodeport
+        tls: false
+    config:
+      log.message.format.version: "3.6"
+      inter.broker.protocol.version: "3.6"
+      offsets.topic.replication.factor: 1
+      transaction.state.log.replication.factor: 1
+      transaction.state.log.min.isr: 1
+      default.replication.factor: 1
+      min.insync.replicas: 1
+
+# ==============================================================================
+# PHẦN 4: APPLICATIONS
+# ==============================================================================
+---
+# --- BACKEND ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crypto-backend
+  labels:
+    app: crypto-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: crypto-backend
+  template:
+    metadata:
+      labels:
+        app: crypto-backend
+    spec:
+      containers:
+      - name: backend
+        image: an2428/crypto-backend:lastest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: ES_HOST
+          value: "https://quickstart-es-http.default.svc:9200"        
+        - name: ES_CA_CERT_PATH
+          value: "/mnt/certs/ca.crt"
+        - name: ELASTIC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: quickstart-es-elastic-user
+              key: elastic
+        volumeMounts:
+        - name: es-certs
+          mountPath: "/mnt/certs"
+          readOnly: true
+      volumes:
+      - name: es-certs
+        secret:
+          secretName: quickstart-es-http-certs-public
+---
+# --- FRONTEND ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crypto-frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: crypto-frontend
+  template:
+    metadata:
+      labels:
+        app: crypto-frontend
+    spec:
+      containers:
+        - name: frontend
+          imagePullPolicy: Always
+          image: an2428/crypto-frontend:lastest
+          ports:
+            - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: crypto-frontend-svc
+spec:
+  type: NodePort
+  selector:
+    app: crypto-frontend
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 30080
+---
+# --- PRODUCER CONFIG (Namespace: kafka) ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ohlcv-producer-config
+  namespace: kafka
+data:
+  KAFKA_BROKER: my-kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092
+  KAFKA_OHLCV_1M_TOPIC: crypto_ohlcv_1m
+  CRYPTO_SYMBOLS: BTC/USDT,ETH/USDT
+  CRYPTO_EXCHANGE: binance
+  MINUTE_CHART_FETCH_INTERVAL: "60"
+---
+# --- PRODUCER DEPLOYMENT (Namespace: kafka) ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ohlcv-producer
+  namespace: kafka
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ohlcv-producer
+  template:
+    metadata:
+      labels:
+        app: ohlcv-producer
+    spec:
+      containers:
+        - name: producer
+          image: an2428/ohlcv-1m-producer:latest
+          envFrom:
+            - configMapRef:
+                name: ohlcv-producer-config
+---
+# --- SPARK STREAMING ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crypto-stream-processor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: crypto-stream
+  template:
+    metadata:
+      labels:
+        app: crypto-stream
+    spec:
+      containers:
+        - name: spark-processor
+          image: an2428/spark-stream-job:latest
+          imagePullPolicy: Always
+          env:
+            - name: KAFKA_BOOTSTRAP
+              value: "my-kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092"
+            - name: ES_HOST
+              value: "quickstart-es-internal-http.default.svc.cluster.local"
+            - name: ES_USER
+              value: "elastic"
+            - name: ES_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: quickstart-es-elastic-user
+                  key: elastic
+            - name: ES_SSL_TRUSTSTORE_PATH
+              value: "file:///mnt/truststore/elastic-truststore.jks"
+            - name: ES_SSL_TRUSTSTORE_PASS
+              value: "changeit"
+            - name: CHECKPOINT_DIR
+              value: "hdfs://hdfs-service:9000/spark/checkpoints/crypto"
+            - name: HDFS_RAW_PATH
+              value: "hdfs://hdfs-service:9000/data/crypto/raw_1m"
+          volumeMounts:
+            - name: es-truststore
+              mountPath: /mnt/truststore
+              readOnly: true
+      volumes:
+        - name: es-truststore
+          secret:
+            secretName: es-truststore
+---
+# --- BACKTEST API ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backtest-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backtest-api
+  template:
+    metadata:
+      labels:
+        app: backtest-api
+    spec:
+      serviceAccountName: spark-sa
+      containers:
+      - name: api
+        image: an2428/custom-crypto-backtester:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+        env:
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: HDFS_RAW_PATH
+          value: "hdfs://hdfs-service:9000/data/crypto/raw_1m"
+        - name: ES_HOST
+          value: "quickstart-es-internal-http.default.svc.cluster.local"
+        - name: ES_USER
+          value: "elastic"
+        - name: ES_PASS
+          valueFrom:
+            secretKeyRef:
+              name: quickstart-es-elastic-user
+              key: elastic
+        - name: CONTAINER_IMAGE
+          value: "an2428/custom-crypto-backtester:latest"
+        - name: ES_SSL_TRUSTSTORE_PATH
+          value: "file:///mnt/truststore/elastic-truststore.jks"
+        - name: ES_SSL_TRUSTSTORE_PASS
+          value: "changeit"
+        volumeMounts:
+        - name: es-truststore
+          mountPath: /mnt/truststore
+          readOnly: true
+      volumes:
+      - name: es-truststore
+        secret:
+          secretName: es-truststore

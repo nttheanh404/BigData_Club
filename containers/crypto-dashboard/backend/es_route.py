@@ -7,59 +7,48 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 @router.get("/latest")
-def get_latest_crypto_data(size: int = 10):
-    """
-    Fetches the latest data for unique crypto symbols from the PREDICTION index.
-    Returns a clean list of objects, e.g., [{ "symbol": "BTC", "price": 50000 }, ...]
-    """
-    try:
-        # 1. Define the Aggregation Query
-        query = {
-            "size": 0,  # We don't want raw hits, only aggregations
-            "aggs": {
-                "symbols": {
-                    "terms": {"field": "symbol.keyword", "size": size},
-                    "aggs": {
-                        "latest": {
-                            "top_hits": {
-                                "size": 1,
-                                "sort": [{"@timestamp": {"order": "desc"}}],
-                                "_source": {
-                                    "includes": [
-                                        "@timestamp", 
-                                        "symbol", 
-                                        "close", 
-                                        "volume", 
-                                        "rsi", 
-                                        "ema_20", 
-                                        "predicted_price"
-                                    ]
-                                }
+def get_latest_crypto_data(size: int = 20):
+    query = {
+        "size": 0,
+        "aggs": {
+            "symbols": {
+                "terms": {
+                    "field": "symbol.keyword",
+                    "size": size
+                },
+                "aggs": {
+                    "latest": {
+                        "top_hits": {
+                            "size": 1,
+                            "sort": [
+                                {"@timestamp": {"order": "desc"}}
+                            ],
+                            "_source": {
+                                "includes": [
+                                    "@timestamp",
+                                    "symbol",
+                                    "close",
+                                    "volume",
+                                    "rsi_14",
+                                    "ema_20",
+                                    "bb_upper",
+                                    "timeframe"
+                                ]
                             }
                         }
                     }
                 }
             }
         }
+    }
 
-        # 2. Execute the Search
-        response = es_client.search(index="crypto_prediction_1m", body=query)
+    res = es_client.search(
+        index="crypto_technical_analysis",
+        body=query
+    )
 
-        # 3. Parse the Response
-        clean_data = []
-        buckets = response.get("aggregations", {}).get("symbols", {}).get("buckets", [])
-
-        for bucket in buckets:
-            hits = bucket.get("latest", {}).get("hits", {}).get("hits", [])
-            if hits:
-                source_data = hits[0]["_source"]
-                clean_data.append(source_data)
-
-        return clean_data
-
-    except Exception as e:
-        logger.error(f"Error in /latest endpoint: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    buckets = res["aggregations"]["symbols"]["buckets"]
+    return [b["latest"]["hits"]["hits"][0]["_source"] for b in buckets]
 
 @router.get("/history")
 def get_crypto_history(symbol: str, minutes: int = 60):

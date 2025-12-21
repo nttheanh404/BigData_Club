@@ -1,3 +1,6 @@
+# =====================================================
+# HADOOP CONFIG
+# =====================================================
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -11,21 +14,25 @@ data:
         <value>hdfs://hdfs-namenode-0.hdfs-namenode.default.svc.cluster.local:9000</value>
       </property>
     </configuration>
+
   hdfs-site.xml: |
     <?xml version="1.0"?>
     <configuration>
       <property>
         <name>dfs.replication</name>
-        <value>1</value>
+        <value>2</value>
       </property>
+
       <property>
         <name>dfs.namenode.name.dir</name>
         <value>/hadoop/dfs/name</value>
       </property>
+
       <property>
         <name>dfs.datanode.data.dir</name>
         <value>/hadoop/dfs/data</value>
       </property>
+
       <property>
         <name>dfs.permissions.enabled</name>
         <value>false</value>
@@ -33,23 +40,27 @@ data:
     </configuration>
 
 ---
-# ------------------- NameNode Service -------------------
+# =====================================================
+# NAMENODE SERVICE
+# =====================================================
 apiVersion: v1
 kind: Service
 metadata:
   name: hdfs-namenode
 spec:
-  ports:
-    - port: 9000
-      name: fs
-    - port: 9870
-      name: http
   clusterIP: None
   selector:
     app: hdfs-namenode
+  ports:
+    - name: fs
+      port: 9000
+    - name: http
+      port: 9870
 
 ---
-# ------------------- NameNode StatefulSet -------------------
+# =====================================================
+# NAMENODE STATEFULSET (PVC)
+# =====================================================
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -65,7 +76,6 @@ spec:
       labels:
         app: hdfs-namenode
     spec:
-      # Fix permissions before starting
       initContainers:
       - name: fix-permissions
         image: busybox
@@ -73,57 +83,70 @@ spec:
         volumeMounts:
         - name: namenode-storage
           mountPath: /hadoop/dfs
+
       containers:
       - name: namenode
-        image: apache/hadoop:3
+        image: apache/hadoop:3.3.6
         command: ["/bin/bash", "-c"]
-        args: 
+        args:
           - |
-            # Format NameNode if not formatted
             if [ ! -d "/hadoop/dfs/name/current" ]; then
               echo "Formatting NameNode..."
               /opt/hadoop/bin/hdfs namenode -format -nonInteractive
             fi
-            # Start NameNode
             echo "Starting NameNode..."
             /opt/hadoop/bin/hdfs namenode
         env:
-          - name: HDFS_CONF_DIR
-            value: /opt/hadoop/etc/hadoop
-        volumeMounts:
-          - name: config
-            mountPath: /opt/hadoop/etc/hadoop/core-site.xml
-            subPath: core-site.xml
-          - name: config
-            mountPath: /opt/hadoop/etc/hadoop/hdfs-site.xml
-            subPath: hdfs-site.xml
-          - name: namenode-storage
-            mountPath: /hadoop/dfs
+        - name: HDFS_CONF_DIR
+          value: /opt/hadoop/etc/hadoop
         ports:
-          - containerPort: 9000
-          - containerPort: 9870
-      volumes:
+        - containerPort: 9000
+        - containerPort: 9870
+        volumeMounts:
         - name: config
-          configMap:
-            name: hadoop-config
+          mountPath: /opt/hadoop/etc/hadoop/core-site.xml
+          subPath: core-site.xml
+        - name: config
+          mountPath: /opt/hadoop/etc/hadoop/hdfs-site.xml
+          subPath: hdfs-site.xml
         - name: namenode-storage
-          emptyDir: {}
+          mountPath: /hadoop/dfs
+
+      volumes:
+      - name: config
+        configMap:
+          name: hadoop-config
+
+  volumeClaimTemplates:
+  - metadata:
+      name: namenode-storage
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: standard
+      resources:
+        requests:
+          storage: 20Gi
 
 ---
-# ------------------- DataNode Service -------------------
+# =====================================================
+# DATANODE SERVICE
+# =====================================================
 apiVersion: v1
 kind: Service
 metadata:
   name: hdfs-datanode
 spec:
-  ports:
-    - port: 9864
-      name: http
+  clusterIP: None
   selector:
     app: hdfs-datanode
+  ports:
+    - name: http
+      port: 9864
 
 ---
-# ------------------- DataNode StatefulSet -------------------
+# =====================================================
+# DATANODE STATEFULSET (PVC / NODE)
+# =====================================================
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -139,7 +162,6 @@ spec:
       labels:
         app: hdfs-datanode
     spec:
-      # Fix permissions before starting
       initContainers:
       - name: fix-permissions
         image: busybox
@@ -147,25 +169,38 @@ spec:
         volumeMounts:
         - name: datanode-storage
           mountPath: /hadoop/dfs
+
       containers:
       - name: datanode
-        image: apache/hadoop:3
+        image: apache/hadoop:3.3.6
         command: ["/opt/hadoop/bin/hdfs", "datanode"]
         env:
-          - name: HDFS_CONF_DIR
-            value: /opt/hadoop/etc/hadoop
+        - name: HDFS_CONF_DIR
+          value: /opt/hadoop/etc/hadoop
+        ports:
+        - containerPort: 9864
         volumeMounts:
-          - name: config
-            mountPath: /opt/hadoop/etc/hadoop/core-site.xml
-            subPath: core-site.xml
-          - name: config
-            mountPath: /opt/hadoop/etc/hadoop/hdfs-site.xml
-            subPath: hdfs-site.xml
-          - name: datanode-storage
-            mountPath: /hadoop/dfs
-      volumes:
         - name: config
-          configMap:
-            name: hadoop-config
+          mountPath: /opt/hadoop/etc/hadoop/core-site.xml
+          subPath: core-site.xml
+        - name: config
+          mountPath: /opt/hadoop/etc/hadoop/hdfs-site.xml
+          subPath: hdfs-site.xml
         - name: datanode-storage
-          emptyDir: {}
+          mountPath: /hadoop/dfs
+
+      volumes:
+      - name: config
+        configMap:
+          name: hadoop-config
+
+  volumeClaimTemplates:
+  - metadata:
+      name: datanode-storage
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: standard
+      resources:
+        requests:
+          storage: 50Gi
+

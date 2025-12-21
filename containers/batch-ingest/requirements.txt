@@ -1,0 +1,7 @@
+pyspark==3.5.1
+requests==2.31.0
+# Pin Pandas and Numpy to compatible stable versions
+pandas==2.1.4
+numpy==1.26.4
+# Pyarrow is often needed for Spark-Pandas conversion
+pyarrow==14.0.1

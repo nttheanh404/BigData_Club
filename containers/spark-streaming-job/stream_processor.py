@@ -20,31 +20,26 @@ def get_env(key, default=None):
 KAFKA_BOOTSTRAP = get_env("KAFKA_BOOTSTRAP", "kafka:9092")
 KAFKA_TOPIC = get_env("KAFKA_TOPIC", "crypto_ohlcv_1m")
 
-# HDFS Configs
-HDFS_RAW_PATH = get_env("HDFS_RAW_PATH", "hdfs://hdfs-service:9000/data/crypto/raw_1m")
-CHECKPOINT_DIR = get_env("CHECKPOINT_DIR", "hdfs://hdfs-service:9000/data/crypto/checkpoints")
+HDFS_BASE_PATH = get_env("HDFS_BASE_PATH", "hdfs://hdfs-service:9000/data/crypto")
+CHECKPOINT_DIR = get_env("CHECKPOINT_DIR", "hdfs://hdfs-service:9000/data/checkpoints/crypto_stream")
 LOOKBACK_DAYS = int(get_env("LOOKBACK_DAYS", "5")) 
 
-# Elasticsearch Connection
 ES_HOST = get_env("ES_HOST", "elasticsearch")
 ES_PORT = get_env("ES_PORT", "9200")
 ES_USER = get_env("ES_USER", "elastic")
 ES_PASS = get_env("ES_PASS", "changeme")
+ES_INDEX = get_env("ES_INDEX", "crypto_technical_analysis").split("/")[0]
 
-# --- TRUSTSTORE HANDLING (CRITICAL FIX) ---
-# Spark (Java) needs "file:///path", but Python needs "/path"
 ES_TRUSTSTORE_URI = get_env("ES_SSL_TRUSTSTORE_PATH", "") 
 ES_TRUSTSTORE_FILE = ES_TRUSTSTORE_URI.replace("file://", "") if ES_TRUSTSTORE_URI else None
 ES_TRUSTSTORE_PASS = get_env("ES_SSL_TRUSTSTORE_PASS", "changeit")
 
-ES_INDEX = get_env("ES_INDEX", "crypto_technical_analysis").split("/")[0]
-
 TIMEFRAMES = {
-    "1m": "1 minute",
-    "5m": "5 minutes",
-    "15m": "15 minutes",
-    "1h": "1 hour",
-    "4h": "4 hours"
+    "1m":  {"duration": "1 minute",   "minutes": 1},
+    "5m":  {"duration": "5 minutes",  "minutes": 5},
+    "15m": {"duration": "15 minutes", "minutes": 15},
+    "1h":  {"duration": "1 hour",     "minutes": 60},
+    "4h":  {"duration": "4 hours",    "minutes": 240}
 }
 
 # =========================================================
@@ -92,14 +87,7 @@ output_schema = StructType([
 # 3. SPARK INIT
 # =========================================================
 print(f"[INIT] Starting Processor...", flush=True)
-print(f"[INIT] HDFS: {HDFS_RAW_PATH}", flush=True)
-
-# Validate Truststore before starting
-if ES_TRUSTSTORE_FILE:
-    if os.path.exists(ES_TRUSTSTORE_FILE):
-        print(f"[INIT] SUCCESS: Found Truststore at {ES_TRUSTSTORE_FILE}", flush=True)
-    else:
-        print(f"[INIT] ERROR: Truststore NOT found at {ES_TRUSTSTORE_FILE}", flush=True)
+print(f"[INIT] HDFS Base: {HDFS_BASE_PATH}", flush=True)
 
 spark = (
     SparkSession.builder
@@ -107,9 +95,7 @@ spark = (
     .config("spark.hadoop.fs.defaultFS", "hdfs://hdfs-service:9000")
     .config("spark.sql.execution.arrow.pyspark.enabled", "false")
     .config("spark.sql.legacy.timeParserPolicy", "CORRECTED")
-    .config("spark.hadoop.dfs.replication", "1")
-    .config("spark.hadoop.dfs.client.use.datanode.hostname", "true")
-    .config("spark.network.timeout", "60s")
+    .config("spark.network.timeout", "120s")
     .getOrCreate()
 )
 spark.sparkContext.setLogLevel("WARN")
@@ -163,129 +149,154 @@ def calculate_all_indicators_udf(pdf):
 def process_batch(df_batch, batch_id):
     if df_batch.isEmpty(): return
 
-    print(f"\n>>> [BATCH {batch_id}] STARTING...", flush=True)
+    print(f"\n>>> [BATCH {batch_id}] Processing...", flush=True)
     df_batch.cache()
 
-    # --- STEP 1: WRITE RAW ---
-    print(f"[DEBUG] {batch_id}: Step 1 - Writing to HDFS...", flush=True)
+    # Get Metadata
     try:
-        (df_batch
-         .withColumn("date", F.to_date("timestamp"))
-         .write.mode("append").partitionBy("symbol", "date").parquet(HDFS_RAW_PATH)
-        )
-        print(f"[DEBUG] {batch_id}: Step 1 - DONE", flush=True)
-    except Exception as e:
-        print(f"!!! [WARN] {batch_id}: HDFS Write Failed: {e}", flush=True)
-
-    print(f"[DEBUG] {batch_id}: Waiting 5s for HDFS consistency...", flush=True)
-    time.sleep(5)
-
-    # --- STEP 2: PREPARE CONTEXT ---
-    print(f"[DEBUG] {batch_id}: Step 2 - Reading History...", flush=True)
-    try:
-        # Check metadata
-        batch_min_ts = df_batch.agg(F.min("timestamp")).collect()[0][0]
-        if batch_min_ts is None:
-             print("[ERROR] Batch Timestamp is NULL!", flush=True)
-             return
+        row_metadata = df_batch.agg(
+            F.min("timestamp").alias("min_ts"), 
+            F.max("timestamp").alias("max_ts"),
+            F.collect_set("symbol").alias("symbols")
+        ).collect()
         
-        lookback_ts = batch_min_ts - pd.Timedelta(days=LOOKBACK_DAYS)
-        active_symbols = [r.symbol for r in df_batch.select("symbol").distinct().collect()]
-
-        try:
-            # Read History
-            df_history = spark.read.parquet(HDFS_RAW_PATH)
-            df_history_filtered = (
-                df_history
-                .filter(F.col("symbol").isin(active_symbols))
-                .filter(F.col("timestamp") >= lookback_ts)
-                .select("symbol", "timestamp", "open", "high", "low", "close", "volume")
-            )
-            df_full_context = df_history_filtered.unionByName(
-                df_batch.select("symbol", "timestamp", "open", "high", "low", "close", "volume"), 
-                allowMissingColumns=True
-            ).dropDuplicates(["symbol", "timestamp"])
-            
-            # Verify read
-            #  count = df_full_context.count()
-            print(f"[DEBUG] {batch_id}: Step 2 - DONE. Rows: {count}", flush=True)
-        except Exception as e:
-            print(f"!!! [WARN] {batch_id}: HDFS Read Failed (First Run?). Using Batch Only.", flush=True)
-            df_full_context = df_batch.select("symbol", "timestamp", "open", "high", "low", "close", "volume")
-
-    except Exception as e:
-        print(f"[ERROR] Step 2 Critical: {e}", flush=True)
+        batch_min_ts = row_metadata[0]["min_ts"]
+        batch_max_ts = row_metadata[0]["max_ts"]
+        active_symbols = row_metadata[0]["symbols"]
+        
+        if batch_min_ts is None: return
+    except:
         return
 
-    results_to_write = []
+    results_to_write_es = []
 
-    # --- STEP 3: CALCULATE ---
-    print(f"[DEBUG] {batch_id}: Step 3 - Calculating...", flush=True)
-    try:
-        for tf_label, tf_duration in TIMEFRAMES.items():
-            df_resampled = (
-                df_full_context
+    # ---------------------------------------------------------
+    # MAIN LOOP: PROCESS EACH TIMEFRAME INDEPENDENTLY
+    # ---------------------------------------------------------
+    for tf_label, tf_config in TIMEFRAMES.items():
+        try:
+            tf_duration = tf_config["duration"]
+            tf_minutes = tf_config["minutes"]
+            
+            # --- A. LOAD SPECIFIC TIMEFRAME HISTORY ---
+            # Instead of reading /1m and resampling, we read /5m, /1h directly
+            tf_hdfs_path = f"{HDFS_BASE_PATH}/{tf_label}"
+            lookback_ts = batch_min_ts - pd.Timedelta(days=LOOKBACK_DAYS)
+            
+            # 1. Read History from Timeframe Folder
+            try:
+                df_history = spark.read.parquet(tf_hdfs_path) \
+                    .filter(F.col("symbol").isin(active_symbols)) \
+                    .filter(F.col("timestamp") >= lookback_ts) \
+                    # Crucial: Filter OUT any data that might overlap with current batch
+                    .filter(F.col("timestamp") < batch_min_ts) \
+                    .select("symbol", "timestamp", "open", "high", "low", "close", "volume")
+            except:
+                # Folder might not exist yet (first run)
+                df_history = spark.createDataFrame([], schema=df_batch.select("symbol", "timestamp", "open", "high", "low", "close", "volume").schema)
+
+            # 2. Resample NEW Data to Match Timeframe
+            # The batch is always 1m data. We must resample it to 5m/1h before unioning.
+            df_new_resampled = (
+                df_batch
                 .groupBy("symbol", F.window("timestamp", tf_duration))
                 .agg(
-                    F.first("open").alias("open"), F.max("high").alias("high"),
-                    F.min("low").alias("low"), F.last("close").alias("close"),
+                    F.first("open").alias("open"), 
+                    F.max("high").alias("high"),
+                    F.min("low").alias("low"), 
+                    F.last("close").alias("close"),
                     F.sum("volume").alias("volume")
                 )
                 .withColumn("timestamp", F.col("window.end"))
-                .withColumn("timeframe", F.lit(tf_label))
                 .drop("window")
             )
-            df_calculated = df_resampled.groupBy("symbol").applyInPandas(calculate_all_indicators_udf, schema=output_schema)
-            df_new = df_calculated.filter(F.col("timestamp") >= batch_min_ts)
-            if not df_new.isEmpty(): results_to_write.append(df_new)
-        print(f"[DEBUG] {batch_id}: Step 3 - DONE", flush=True)
-    except Exception as e:
-        print(f"!!! [ERROR] Calculation Failed: {e}", flush=True)
-        traceback.print_exc()
-        return
 
-    # --- STEP 4: WRITE TO ES ---
-    if results_to_write:
-        print(f"[DEBUG] {batch_id}: Step 4 - Writing to ES...", flush=True)
+            # 3. Combine History + New Resampled Data
+            df_full_context = df_history.unionByName(
+                df_new_resampled, allowMissingColumns=True
+            ).dropDuplicates(["symbol", "timestamp"])
+
+            # --- B. CALCULATE INDICATORS ---
+            df_calculated = df_full_context.groupBy("symbol").applyInPandas(
+                calculate_all_indicators_udf, schema=output_schema
+            )
+            
+            # Add Timeframe Label
+            df_calculated = df_calculated.withColumn("timeframe", F.lit(tf_label))
+
+            # --- C. PREPARE ES WRITE (Real-time) ---
+            # Only send updates for timestamps that are "fresh" (>= batch start)
+            # Note: For 1h candle, this update will happen every minute, changing the "live" 1h candle.
+            df_new_results = df_calculated.filter(F.col("timestamp") >= batch_min_ts)
+            if not df_new_results.isEmpty():
+                results_to_write_es.append(df_new_results)
+
+            # --- D. HDFS WRITE (Closed Candles Only) ---
+            if tf_label != "1m":
+                latest_ts_seconds = batch_max_ts.timestamp()
+                interval_seconds = tf_minutes * 60
+                
+                # Check if this minute COMPLETED the timeframe window
+                if (latest_ts_seconds + 60) % interval_seconds == 0:
+                    print(f"[DEBUG] {tf_label} candle closed. Writing to {tf_hdfs_path}...", flush=True)
+                    
+                    target_ts = batch_max_ts + pd.Timedelta(minutes=1)
+                    df_closed_candle = df_calculated.filter(F.col("timestamp") == target_ts)
+                    
+                    if not df_closed_candle.isEmpty():
+                        # We only save the RAW columns (O/H/L/C/V) to HDFS history to save space
+                        # The indicators are re-calculated on load anyway.
+                        df_closed_candle.select("symbol", "timestamp", "open", "high", "low", "close", "volume") \
+                            .write.mode("append").partitionBy("symbol").parquet(tf_hdfs_path)
+
+        except Exception as e:
+            print(f"[ERROR] Processing {tf_label}: {e}")
+            # traceback.print_exc()
+
+    # ---------------------------------------------------------
+    # E. WRITE TO ELASTICSEARCH
+    # ---------------------------------------------------------
+    if results_to_write_es:
         try:
-            df_final = reduce(DataFrame.union, results_to_write)
+            df_final = reduce(DataFrame.union, results_to_write_es)
             df_final = df_final.withColumn("doc_id", F.concat_ws("_", F.col("symbol"), F.col("timeframe"), F.col("timestamp").cast("string")))
             df_final = df_final.withColumn("@timestamp", F.current_timestamp())
             
-            # --- CONFIGURE WRITER ---
             writer = (df_final.write
-             .format("org.elasticsearch.spark.sql")
-             .option("es.nodes", ES_HOST)
-             .option("es.port", ES_PORT)
-             .option("es.nodes.wan.only", "true")
-             .option("es.mapping.id", "doc_id") 
-             .option("es.write.operation", "upsert")
-             .option("es.net.http.auth.user", ES_USER)
-             .option("es.net.http.auth.pass", ES_PASS)
-             .option("es.net.ssl", "true")
+                .format("org.elasticsearch.spark.sql")
+                .option("es.nodes", ES_HOST).option("es.port", ES_PORT)
+                .option("es.nodes.wan.only", "true").option("es.mapping.id", "doc_id") 
+                .option("es.write.operation", "upsert")
+                .option("es.net.http.auth.user", ES_USER).option("es.net.http.auth.pass", ES_PASS)
+                .option("es.net.ssl", "true")
             )
-            
-            # Use URI for Spark/Java config (file:///...)
-            if ES_TRUSTSTORE_FILE and os.path.exists(ES_TRUSTSTORE_FILE):
-                print(f"[DEBUG] Configuring SSL Truststore: {ES_TRUSTSTORE_URI}", flush=True)
-                writer = writer.option("es.net.ssl.truststore.location", ES_TRUSTSTORE_URI)
-                writer = writer.option("es.net.ssl.truststore.pass", ES_TRUSTSTORE_PASS)
+            if ES_TRUSTSTORE_FILE:
+                writer = writer.option("es.net.ssl.truststore.location", ES_TRUSTSTORE_URI).option("es.net.ssl.truststore.pass", ES_TRUSTSTORE_PASS)
             else:
-                print("[WARN] Truststore not found. Allowing Self-Signed Certs.", flush=True)
                 writer = writer.option("es.net.ssl.cert.allow.self.signed", "true")
-
-            writer.mode("append").save(ES_INDEX)
             
-            print(f"[DEBUG] {batch_id}: Step 4 - DONE. SUCCESS.", flush=True)
+            writer.mode("append").save(ES_INDEX)
         except Exception as e:
-            print(f"!!! [ERROR] ES Write Failed: {e}", flush=True)
-    else:
-        print(f">>> [BATCH {batch_id}] COMPLETED (No new data)", flush=True)
-    
+            print(f"[ERROR] ES Write: {e}")
+
+    # ---------------------------------------------------------
+    # F. WRITE RAW 1M DATA (Source of Truth)
+    # ---------------------------------------------------------
+    try:
+        (df_batch
+         .withColumn("date", F.to_date("timestamp"))
+         .coalesce(1)
+         .write.mode("append").partitionBy("symbol", "date")
+         .parquet(f"{HDFS_BASE_PATH}/1m")
+        )
+    except Exception as e:
+        print(f"[ERROR] HDFS 1m Archive: {e}")
+
     df_batch.unpersist()
+    print(f">>> [BATCH {batch_id}] DONE.\n", flush=True)
 
 # =========================================================
-# 6. STREAM DEFINITION
+# 6. STREAM START
 # =========================================================
 df_stream = (
     spark.readStream
@@ -308,5 +319,5 @@ query = (
     .start()
 )
 
-print("[INFO] Stream started... Waiting for data...", flush=True)
+print("[INFO] Stream started...", flush=True)
 query.awaitTermination()
