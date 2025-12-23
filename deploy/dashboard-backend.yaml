@@ -16,7 +16,8 @@ spec:
     spec:
       containers:
       - name: backend
-        image: an2428/crypto-backend:lastest  # Replace with your actual image name
+        image: an2428/crypto-backend:latest  # Replace with your actual image name
+        imagePullPolicy: Always
         ports:
         - containerPort: 8000
         env:

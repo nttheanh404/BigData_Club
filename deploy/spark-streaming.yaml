@@ -16,14 +16,32 @@ spec:
         - name: spark-processor
           image: an2428/spark-stream-job:latest
           imagePullPolicy: Always
+          
+          # --- ADDED RESOURCE LIMITS HERE ---
+          resources:
+            requests:
+              memory: "1024Mi"   # Request 1GB
+              cpu: "500m"
+            limits:
+              memory: "2048Mi"   # Limit to 2GB (Crucial for Pandas/Arrow)
+              cpu: "1000m"
+          # ----------------------------------
+
           env:
+            # --- ADDED SPARK MEMORY ENV VARS ---
+            - name: SPARK_DRIVER_MEMORY
+              value: "1g"
+            - name: SPARK_EXECUTOR_MEMORY
+              value: "1g"
+            # -----------------------------------
+
             # CORRECTED URLS:
             - name: HDFS_BASE_PATH
               value: "hdfs://hdfs-service.default.svc.cluster.local:9000/data/crypto"
             - name: CHECKPOINT_DIR
               value: "hdfs://hdfs-service.default.svc.cluster.local:9000/data/checkpoints/crypto"
               
-            # Kafka & ES (These looked correct based on your logs/svc)
+            # Kafka & ES
             - name: KAFKA_BOOTSTRAP
               value: "my-kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092"
             - name: ES_HOST

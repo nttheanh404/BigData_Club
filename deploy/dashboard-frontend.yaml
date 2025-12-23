@@ -15,7 +15,7 @@ spec:
       containers:
         - name: frontend
           imagePullPolicy: Always
-          image: an2428/crypto-frontend:lastest # Replace with your image
+          image: an2428/crypto-frontend:latest # Replace with your image
           ports:
             - containerPort: 80
 ---
