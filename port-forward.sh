@@ -4,6 +4,8 @@ NAMESPACE=default
 
 echo "🚀 Starting port-forward..."
 
+kubectl exec -it hdfs-namenode-0 -- /opt/hadoop/bin/hdfs dfsadmin -safemode leave
+
 # Backend API
 kubectl port-forward svc/crypto-backend-svc 8000:8000 -n $NAMESPACE &
 echo "✔ crypto-backend -> localhost:8000"
