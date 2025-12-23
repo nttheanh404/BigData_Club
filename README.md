@@ -23,33 +23,6 @@ This project implements a **full Lambda Architecture** for analyzing and serving
 
 ---
 
-### Project Structure
-
-```
-Bigdata/
-│
-├── services/
-│   ├── producer/         # Kafka producers (collect OHLCV data)
-│   ├── stream/           # Spark streaming (real-time analytics)
-│   ├── batch/            # Batch layer (Spark historical jobs)
-│   ├── web/              # Flask dashboard + API gateway
-│   └── utils/            # Shared helpers (API, HDFS, Elastic,...)
-│
-├── docker/               # Dockerfile for each service
-├── k8s/                  # Kubernetes manifests
-├── scripts/              # Utility scripts (run, deploy, cron)
-│
-├── data/                 # Sample data for local test
-├── logs/                 # Runtime logs
-│
-├── .env.example          # Example environment configuration
-├── requirements.txt      # Python dependencies
-├── .gitignore
-└── README.md
-```
-
----
-
 ### Core Technologies
 
 | Category         | Stack                                |
